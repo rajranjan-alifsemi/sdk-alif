@@ -124,8 +124,85 @@ def test(String pytest_test){
         """
 
 }
+def get_all_alif_boards (){
+    def output = sh(
+        script: '''#!/bin/bash -xe
+        cd /root/alif
+        all_alif_boards=()
+        while read -r name qualifiers; do
+            IFS=',' read -ra qlist <<< "$qualifiers"
+            for q in "${qlist[@]}"; do
+                all_alif_boards+=("$name/$q")
+            done
+        done < <(west boards -n alif --format '{name} {qualifiers}')
+        printf "%s\\n" "${all_alif_boards[@]}"
+        ''',
+        returnStdout: true
+    ).trim()
 
+    return output ? output.readLines() : []
+}
+def build_test_apps(boards, samples, args = null) {
+    def stages = [:]
 
+    def allBoardList = (boards instanceof List)  ? boards  : [boards]
+    def appList      = (samples instanceof List) ? samples : [samples]
+
+    if (args != null) {
+        args = (args instanceof List) ? args : [args]
+    }
+
+    def boardArray = allBoardList.join(' ')
+
+    for (selectedAppEntry in appList) {
+        //This creates a new local variable inside the loop avoid Groovy variable binding issue
+        def appName                = selectedAppEntry[0]
+        def buildAppWithPathAndArg = selectedAppEntry[1]
+
+        stages[appName] = {
+            echo "✅ Building  ${appName}"
+            catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+                sh """#!/bin/bash -xe
+                cd /root/alif/alif
+                all_boards=(${boardArray})
+                overall_status=0
+                totalCnt=0
+                runCnt=0
+                skipCnt=0
+                failCnt=0
+                totalCnt=\${#all_boards[@]}
+
+                for boardName in "\${all_boards[@]}"; do
+                    if [[ "\$boardName" == *apss* ]]; then
+                        echo "Skipping \$boardName"
+                        skipCnt=\$((skipCnt + 1))
+                        continue
+                    fi
+                    boardNameWithUnderscore="\${boardName//\\//_}"
+                    build_dir="build_\${boardNameWithUnderscore}_${appName}"
+                    echo "🚩 Compiling for board: \$boardName, sample: ${appName} (dir: \$build_dir)"
+
+                    west build --force -p always -b "\$boardName" ${buildAppWithPathAndArg} --build-dir \$build_dir -DCMAKE_BUILD_PARALLEL_LEVEL=128
+                    build_result=\$?
+
+                    if [[ \$build_result -eq 0 ]]; then
+                        echo "📌 ✅ Compilation succeeded for board: \$boardName, sample: ${appName}"
+                        runCnt=\$((runCnt + 1))
+                    else
+                        echo "❌🚫 Build failed (code: \$build_result) for board: \$boardName, sample: ${appName}"
+                        overall_status=1
+                        failCnt=\$((failCnt + 1))
+                    fi
+                done
+
+                echo "ℹ️ Run => Pass:\$runCnt/\$totalCnt, Fail: \$failCnt/\$totalCnt, Skip: \$skipCnt/\$totalCnt"
+                exit \$overall_status
+                """
+            }
+        }
+    }
+    return stages
+}
 
 return [
     initialize: this.&initialize,
@@ -133,6 +210,7 @@ return [
     verify_gitlint: this.&verify_gitlint,
     build_ble: this.&build_ble,
     flash_test: this.&flash_test,
-    test: this.&test
-
+    test: this.&test,
+    get_all_alif_boards: this.&get_all_alif_boards,
+    build_test_apps: this.&build_test_apps
 ]
